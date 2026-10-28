@@ -1,0 +1,22 @@
+# Data Processing & Storage
+pandas
+numpy
+pyarrow
+
+# Machine Learning & Dimensionality Reduction
+kmodes
+scikit-learn
+prince
+joblib
+
+# Visualization & Notebook
+matplotlib
+seaborn
+jupyter
+ipykernel
+
+# API Deployment & Automation (Phase 4)
+fastapi
+uvicorn
+requests
+pydantic

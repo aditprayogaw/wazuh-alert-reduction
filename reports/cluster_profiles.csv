@@ -1,0 +1,4 @@
+cluster,n_pola_kejadian,rule_id_modus,agent_modus,decoder_modus,level_modus,location_modus,waktu_modus,total_volume_log,rekomendasi_tuning,tingkat_prioritas
+0,6848,31101,sads,web-accesslog,5,/var/log/nginx/access.log,pagi,363583,,
+1,2702,31151,sads,web-accesslog,10,/var/log/nginx/access.log,siang,26267,,
+2,14795,500554,pusatkarir,syscheck_new_entry,12,syscheck,dini_hari,32775,,
