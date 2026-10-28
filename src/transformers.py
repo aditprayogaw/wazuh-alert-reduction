@@ -6,14 +6,12 @@ from pathlib import Path
 import pandas as pd
 
 from config import (
-    ARCHIVE_FILE,
-    TARGET_MONTH,
+    ARCHIVE_EXTENSION,
     JSON_GZ_PATTERN,
     EXTRACT_FIELDS,
     DEDUP_GROUP_COLS,
     TIME_WINDOW_MINUTES,
     HOUR_GROUPS,
-    ALLOWED_AGENTS
 )
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -54,87 +52,65 @@ def _iter_json_gz(tar: tarfile.TarFile, member: tarfile.TarInfo):
 
 # ── Data Loading ───────────────────────────────────────────────────────
 
-def load_all_months() -> pd.DataFrame:
-    """
-    Baca semua ossec-alerts-XX.json.gz dari arsip untuk kebutuhan analisis tren makro.
-    Fungsi ini membaca field bertingkat asli JSON menggunakan titik (.) sebelum dirapikan.
-    """
+def _iter_json_gz_file(path: Path):
+    """Generator: baca satu file .json.gz biasa (di folder)."""
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as gz:
+        for line in gz:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def read_wazuh_logs(raw_dir: Path) -> list:
+    """Baca semua ossec-alerts-*.json.gz dari arsip .tar.gz maupun folder bertingkat."""
     records = []
-    with tarfile.open(ARCHIVE_FILE, "r:gz") as tar:
-        for member in tar.getmembers():
-            p = Path(member.name)
-            if not p.name.endswith(".json.gz") or not p.match(JSON_GZ_PATTERN):
-                continue
-            
-            # Mengambil nama folder bulan (misal: May, Jun, Jul)
-            month = p.parts[-2] if len(p.parts) >= 2 else "unknown"
-            
-            for record in _iter_json_gz(tar, member):
-                # Ambil data mentah menggunakan key bertingkat asli dari objek JSON
-                agent_obj = record.get("agent", {})
-                rule_obj = record.get("rule", {})
-                
-                records.append({
-                    "timestamp": record.get("timestamp"),
-                    "agent_name": agent_obj.get("name") if isinstance(agent_obj, dict) else None,
-                    "rule_level": rule_obj.get("level") if isinstance(rule_obj, dict) else None,
-                    "month": month
-                })
 
-    df = pd.DataFrame(records)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df["rule_level"] = pd.to_numeric(df["rule_level"], errors="coerce")
-    df = df.dropna(subset=["timestamp"])
-    return df
+    for archive in sorted(raw_dir.rglob(f"*{ARCHIVE_EXTENSION}")):
+        with tarfile.open(archive, "r:gz") as tar:
+            for member in tar.getmembers():
+                p = Path(member.name)
+                if not member.isfile() or not p.match(JSON_GZ_PATTERN):
+                    continue
+                for record in _iter_json_gz(tar, member):
+                    records.append(_parse_record(record, EXTRACT_FIELDS))
 
+    for gz_file in sorted(raw_dir.rglob(JSON_GZ_PATTERN)):
+        for record in _iter_json_gz_file(gz_file):
+            records.append(_parse_record(record, EXTRACT_FIELDS))
 
-def load_june_logs() -> pd.DataFrame:
-    """
-    Baca semua file log jalur folder target (Juni).
-    Mengekstrak data mentah tanpa mengubah nama field bertingkat aslinya 
-    untuk kebutuhan audit fase Data Understanding.
-    """
-    records = []
-    with tarfile.open(ARCHIVE_FILE, "r:gz") as tar:
-        for member in tar.getmembers():
-            p = Path(member.name)
-            if TARGET_MONTH not in p.parts:
-                continue
-            if not p.name.endswith(".json.gz") or not p.match(JSON_GZ_PATTERN):
-                continue
-            for record in _iter_json_gz(tar, member):
-                records.append(_parse_record(record, EXTRACT_FIELDS))
-    return pd.DataFrame(records)
+    return records
 
 
 # ── Cleaning & Flattening (Data Preparation) ───────────────────────────
-def clean_logs(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Eksekusi transformasi data mentah (df_raw) menjadi berformat flat tabel dua dimensi (df).
-    Melakukan penanganan nilai kosong (drop null), penyelarasan tipe data resmi,
-    dan memfilter agent yang tidak relevan dengan penelitian.
-    """
-    # 1. Drop null pada field kritis
-    critical_raw_cols = ["timestamp", "agent_name", "rule_level", "rule_id", "rule_description", "decoder_name"]
-    df_clean = df_raw.dropna(subset=critical_raw_cols).copy()
+def flatten_and_clean_logs(records: list) -> pd.DataFrame:
+    """Ubah list record menjadi tabel 2D bersih (drop null kolom esensial)."""
+    df_raw = pd.DataFrame(records)
+    if df_raw.empty:
+        return df_raw
 
-    # 2. Konversi tipe data
-    df_clean["timestamp"] = pd.to_datetime(df_clean["timestamp"], errors="coerce")
+    critical_cols = ["timestamp", "agent_name", "rule_level", "rule_id",
+                     "rule_groups", "decoder_name", "location"]
+    df_clean = df_raw.dropna(subset=critical_cols).copy()
+
+    df_clean["timestamp"] = pd.to_datetime(df_clean["timestamp"], errors="coerce", utc=True)
+    df_clean = df_clean.dropna(subset=["timestamp"])
+    df_clean["timestamp"] = df_clean["timestamp"].dt.tz_localize(None)
+
     df_clean["agent_name"] = df_clean["agent_name"].astype(str)
-    df_clean["rule_level"] = pd.to_numeric(df_clean["rule_level"], errors="coerce").astype(int)
-    df_clean["rule_description"] = df_clean["rule_description"].astype(str)
+    df_clean["rule_level"] = pd.to_numeric(df_clean["rule_level"], errors="coerce")
+    df_clean = df_clean.dropna(subset=["rule_level"])
+    df_clean["rule_level"] = df_clean["rule_level"].astype(int)
+    df_clean["rule_description"] = df_clean["rule_description"].fillna("-").astype(str)
     df_clean["rule_id"] = df_clean["rule_id"].astype(str)
     df_clean["rule_groups"] = df_clean["rule_groups"].apply(
-        lambda x: ",".join(x) if isinstance(x, list) else str(x) if pd.notna(x) else "unknown"
+        lambda x: ",".join(x) if isinstance(x, list) else str(x)
     )
     df_clean["decoder_name"] = df_clean["decoder_name"].astype(str)
     df_clean["location"] = df_clean["location"].astype(str)
-
-    # 3. Filter 4 agent yang relevan
-    df_clean = df_clean[df_clean["agent_name"].isin(ALLOWED_AGENTS)]
-
-    # 4. Drop timestamp null
-    df_clean = df_clean.dropna(subset=["timestamp"])
 
     return df_clean.reset_index(drop=True)
 
@@ -159,26 +135,21 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Time-Window Deduplication (Data Preparation) ────────────────────────
-def deduplicate_time_window(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aglomerasi Kuantitas Log Berbasis Jendela Waktu (Time-Window Aggregation).
-    Menggabungkan spam log sejenis dalam interval menit yang ditentukan di config.py
-    """
+def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    """Agregasi log sejenis per jendela waktu; alert_count = jumlah kemunculan."""
     df = df.copy()
-
-    # 1. Membuat penanda interval jendela waktu (floor rounding)
     df["time_window"] = df["timestamp"].dt.floor(f"{TIME_WINDOW_MINUTES}min")
 
-    # 2. Menggabungkan kolom kunci penentu dengan kolom jendela waktu
     group_keys = DEDUP_GROUP_COLS + ["time_window"]
 
-    # 3. Proses kompresi volume log melalui teknik agregasi kuantitas
-    deduped = df.groupby(group_keys).size().reset_index(name="alert_count")
+    deduped = (
+        df.groupby(group_keys, as_index=False)
+          .agg(
+              alert_count=("rule_id", "size"),
+              rule_description=("rule_description", "first"),
+              rule_groups=("rule_groups", "first"),
+          )
+    )
 
-    # 4. Ekstraksi ulang fitur jam dari kolom jendela waktu yang baru terbentuk
-    deduped["hour"] = deduped["time_window"].dt.hour
-    deduped["hour_group"] = deduped["hour"].apply(get_hour_group)
-
-    # 5. Kembalikan dataframe dengan membuang kolom penanda waktu sementara
-    return deduped.drop(columns=["time_window", "hour"])
-
+    deduped["hour_group"] = deduped["time_window"].dt.hour.apply(get_hour_group)
+    return deduped.drop(columns=["time_window"])
