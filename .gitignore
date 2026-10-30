@@ -11,6 +11,8 @@ models/*.pkl
 # Log files
 reports/*.log
 *.log
+reports/figures/*.png
+reports/*.csv
 
 # Virtual environment
 .venv/
