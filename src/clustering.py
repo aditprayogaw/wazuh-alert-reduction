@@ -17,6 +17,7 @@ from config import (
     FIGURES_DIR,
 )
 
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Elbow Method ───────────────────────────────────────────────────────
 def compute_elbow(X: np.ndarray) -> list:
@@ -68,7 +69,11 @@ def compute_silhouette(X: np.ndarray) -> list:
         if len(set(labels)) < 2:
             scores.append(None)
             continue
-        score = silhouette_score(X_encoded, labels, metric="hamming")
+        score = silhouette_score(
+            X_encoded, labels, metric="hamming",
+            sample_size=min(10000, len(X_encoded)),
+            random_state=KMODES_RANDOM_STATE,
+        )
         scores.append(score)
         print(f"K={k:2d} | silhouette={score:.4f}")
     return scores
@@ -134,8 +139,14 @@ def plot_mca(df: pd.DataFrame, cluster_labels: dict,
     plt.show()
 
     # Variance explained
-    explained = mca.percentage_of_variance_
     print("Variance explained per dimensi MCA:")
-    for i, var in enumerate(explained):
+    if hasattr(mca, "percentage_of_variance_"):
+        explained = list(mca.percentage_of_variance_)
+    else:
+        explained = [
+            float(str(v).replace("%", ""))
+            for v in mca.eigenvalues_summary["% of variance"]
+        ]
+    for i, var in enumerate(explained[:2]):
         print(f"  Dimensi {i+1} : {var:.2f}%")
-    print(f"  Total     : {sum(explained):.2f}%")
+    print(f"  Total     : {sum(explained[:2]):.2f}%")

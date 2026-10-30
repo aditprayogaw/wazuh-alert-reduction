@@ -185,6 +185,10 @@ def run_pipeline():
     # Filter agen interaktif
     df = filter_blacklist_agents(df)
 
+    if df.empty:
+        log.error("Data kosong setelah blacklist. Proses dihentikan.")
+        return
+
     df.to_parquet(PARQUET_CLEANED, index=False)
     log.info(f"Data cleaned disimpan di: {PARQUET_CLEANED}")
 
@@ -204,6 +208,9 @@ def run_pipeline():
 
     # ── Step 4: K-Modes Clustering (Agnostik Infrastruktur) ─────────────
     log.info(f"Step 4: Menjalankan K-Modes Clustering (K={K_OPTIMAL}) pada fitur: {CLUSTER_FEATURES}...")
+    if len(deduped) < K_OPTIMAL:
+        log.error(f"Pola unik ({len(deduped)}) kurang dari K ({K_OPTIMAL}).")
+        return
     X = deduped[CLUSTER_FEATURES].astype(str).values
 
     km = KModes(
@@ -229,8 +236,7 @@ def run_pipeline():
     log.info(f"Profil klaster disimpan di: {CSV_PROFILES}")
 
     export_mapping_template(deduped)
-
-    duration = (datetime.now() - start).seconds
+    duration = int((datetime.now() - start).total_seconds())
     log.info("=" * 60)
     log.info(f"Script A selesai dalam {duration} detik.")
     print("\n" + "#" * 60)

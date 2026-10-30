@@ -9,8 +9,7 @@ models/*.pkl
 *.pkl
 
 # Log files
-reports/*.log
-*.log
+reports/
 
 # Virtual environment
 .venv/
