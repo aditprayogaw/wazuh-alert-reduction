@@ -61,6 +61,7 @@ RF_CRITERION        = "gini"
 PARQUET_CLEANED     = DATA_PROC_DIR / "cleaned.parquet"
 PARQUET_DEDUPED     = DATA_PROC_DIR / "deduped.parquet"
 PARQUET_CLUSTERED   = DATA_PROC_DIR / "clustered.parquet"
+CSV_DEDUPED         = DATA_PROC_DIR / "deduped.csv"
 CSV_PROFILES        = REPORTS_DIR / "cluster_profiles.csv"
 CSV_CLUSTER_MAPPING = DATA_PROC_DIR / "cluster_mapping.csv"
 
