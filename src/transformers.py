@@ -14,6 +14,9 @@ from config import (
     HOUR_GROUPS,
 )
 
+LOCAL_TZ = "Asia/Makassar"  # WITA (Bali)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 def _get_nested(record: dict, path: list):
@@ -35,7 +38,7 @@ def _parse_record(record: dict, fields: dict) -> dict:
 
 
 def _iter_json_gz(tar: tarfile.TarFile, member: tarfile.TarInfo):
-    """Generator: yield satu parsed dict per baris dari file .json.gz."""
+    """Generator: yield satu parsed dict per baris dari file .json.gz di dalam tar."""
     f = tar.extractfile(member)
     if f is None:
         return
@@ -50,8 +53,6 @@ def _iter_json_gz(tar: tarfile.TarFile, member: tarfile.TarInfo):
                 continue
 
 
-# ── Data Loading ───────────────────────────────────────────────────────
-
 def _iter_json_gz_file(path: Path):
     """Generator: baca satu file .json.gz biasa (di folder)."""
     with gzip.open(path, "rt", encoding="utf-8", errors="replace") as gz:
@@ -64,6 +65,8 @@ def _iter_json_gz_file(path: Path):
             except json.JSONDecodeError:
                 continue
 
+
+# ── Data Loading ───────────────────────────────────────────────────────
 
 def read_wazuh_logs(raw_dir: Path) -> list:
     """Baca semua ossec-alerts-*.json.gz dari arsip .tar.gz maupun folder bertingkat."""
@@ -86,6 +89,7 @@ def read_wazuh_logs(raw_dir: Path) -> list:
 
 
 # ── Cleaning & Flattening (Data Preparation) ───────────────────────────
+
 def flatten_and_clean_logs(records: list) -> pd.DataFrame:
     """Ubah list record menjadi tabel 2D bersih (drop null kolom esensial)."""
     df_raw = pd.DataFrame(records)
@@ -96,9 +100,10 @@ def flatten_and_clean_logs(records: list) -> pd.DataFrame:
                      "rule_groups", "decoder_name", "location"]
     df_clean = df_raw.dropna(subset=critical_cols).copy()
 
+    # Timestamp: parse ke UTC (aman untuk offset campuran), konversi ke WITA, buang tz
     df_clean["timestamp"] = pd.to_datetime(df_clean["timestamp"], errors="coerce", utc=True)
     df_clean = df_clean.dropna(subset=["timestamp"])
-    df_clean["timestamp"] = df_clean["timestamp"].dt.tz_localize(None)
+    df_clean["timestamp"] = df_clean["timestamp"].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
 
     df_clean["agent_name"] = df_clean["agent_name"].astype(str)
     df_clean["rule_level"] = pd.to_numeric(df_clean["rule_level"], errors="coerce")
@@ -115,18 +120,18 @@ def flatten_and_clean_logs(records: list) -> pd.DataFrame:
     return df_clean.reset_index(drop=True)
 
 
-# ── Feature Engineering (Data Preparation) ────────────────────────────────
+# ── Feature Engineering (Data Preparation) ─────────────────────────────
 
 def get_hour_group(hour: int) -> str:
-    """Transformasi nilai jam numerik (0-23) ke kelompok teks temporal siber."""
+    """Transformasi nilai jam numerik (0-23) ke kelompok teks temporal."""
     for group_name, hour_range in HOUR_GROUPS.items():
         if hour in hour_range:
             return group_name
     return "malam"
 
-    
+
 def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
-    """Rekayasa Fitur Tahap 1: Ekstraksi waktu, tanggal, dan grup jam."""
+    """Rekayasa fitur: ekstraksi tanggal, jam, dan grup jam."""
     df = df.copy()
     df["date"] = df["timestamp"].dt.date
     df["hour"] = df["timestamp"].dt.hour
@@ -134,7 +139,8 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── Time-Window Deduplication (Data Preparation) ────────────────────────
+# ── Time-Window Deduplication (Data Preparation) ───────────────────────
+
 def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
     """Agregasi log sejenis per jendela waktu; alert_count = jumlah kemunculan."""
     df = df.copy()
@@ -153,3 +159,4 @@ def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
 
     deduped["hour_group"] = deduped["time_window"].dt.hour.apply(get_hour_group)
     return deduped.drop(columns=["time_window"])
+    
