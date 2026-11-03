@@ -1,0 +1,5 @@
+cluster,sample_rule_id,sample_rule_level,sample_description,label_semantik
+0,52507,3,ClamAV database update,
+1,500554,12,Integrity checksum changed.,
+2,510,7,Host-based anomaly detection event (rootcheck).,
+3,31122,5,Web server 500 error code (Internal Error).,

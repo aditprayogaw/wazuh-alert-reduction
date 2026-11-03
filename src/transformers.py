@@ -160,3 +160,19 @@ def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
     deduped["hour_group"] = deduped["time_window"].dt.hour.apply(get_hour_group)
     return deduped.drop(columns=["time_window"])
     
+# ── Filter Periode ─────────────────────────────────────────────────────
+
+def period_bounds(text: str):
+    """'2026' | '2026-03' | '2026-03-15' -> (awal, akhir_eksklusif). Error: ValueError."""
+    p = pd.Period(text.strip())
+    return p.start_time, (p + 1).start_time
+
+
+def filter_period(df: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
+    """Filter baris berdasarkan periode (waktu WITA). Kosong semua = semua data.
+    end kosong = sama dengan periode start."""
+    if not start and not end:
+        return df
+    lo = period_bounds(start)[0] if start else df["timestamp"].min()
+    hi = period_bounds(end or start)[1]
+    return df[(df["timestamp"] >= lo) & (df["timestamp"] < hi)].copy()
