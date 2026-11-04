@@ -1,4 +1,11 @@
 # src/classification.py
+"""
+Modul klasifikasi: pelabelan per rule_id, Custom Label Encoder (UNKNOWN-safe),
+Random Forest, evaluasi, serialisasi model, dan inferensi.
+
+Dipakai oleh: pipeline_b_train_model.py (Script B), pipeline_c_evaluate.py (Script C),
+dan api/main.py (inferensi).
+"""
 import joblib
 import numpy as np
 import pandas as pd
@@ -12,7 +19,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 
 from config import (
-    CLUSTER_FEATURES,
+    CLASSIFICATION_FEATURES,
     TARGET_LABEL_COL,
     RF_TEST_SIZE,
     RF_RANDOM_STATE,
@@ -23,8 +30,8 @@ from config import (
     ENCODER_FILE,
     MODELS_DIR,
     FIGURES_DIR,
-    CSV_CLUSTER_MAPPING,
 )
+from src.labeling import load_rule_labels
 
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -57,32 +64,16 @@ class CustomLabelEncoder:
         ]
 
 
-# ── Pelabelan dari Mapping Manual ──────────────────────────────────────
-def apply_cluster_labels(df_clustered: pd.DataFrame) -> pd.DataFrame:
-    """Sebarkan label_semantik dari cluster_mapping.csv ke seluruh baris data."""
-    mapping = pd.read_csv(CSV_CLUSTER_MAPPING)
-
-    if "label_semantik" not in mapping.columns:
-        raise ValueError("Kolom 'label_semantik' tidak ada di cluster_mapping.csv")
-
-    mapping["label_semantik"] = mapping["label_semantik"].astype(str).str.strip()
-    empty = mapping[
-        mapping["label_semantik"].isin(["", "nan"])
-    ]["cluster"].tolist()
-    if empty:
-        raise ValueError(
-            f"Label semantik belum diisi untuk cluster: {empty}. "
-            f"Lengkapi {CSV_CLUSTER_MAPPING} terlebih dahulu."
-        )
-
-    label_map = dict(zip(mapping["cluster"].astype(int), mapping["label_semantik"]))
-    df = df_clustered.copy()
-    df[TARGET_LABEL_COL] = df["cluster"].astype(int).map(label_map)
-
-    if df[TARGET_LABEL_COL].isna().any():
-        missing = df.loc[df[TARGET_LABEL_COL].isna(), "cluster"].unique().tolist()
-        raise ValueError(f"Cluster {missing} tidak ditemukan di mapping.")
-    return df
+# ── Pelabelan dari rule_labels.csv ─────────────────────────────────────
+def apply_rule_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Beri label ke setiap baris berdasarkan rule_id (sumber: rule_labels.csv, kolom label_final)."""
+    label_map = load_rule_labels()
+    out = df.copy()
+    out[TARGET_LABEL_COL] = out["rule_id"].astype(str).map(label_map)
+    if out[TARGET_LABEL_COL].isna().any():
+        missing = sorted(out.loc[out[TARGET_LABEL_COL].isna(), "rule_id"].astype(str).unique())
+        raise ValueError(f"rule_id belum ada di rule_labels.csv: {missing}. Jalankan ulang Script A.")
+    return out
 
 
 # ── Split & Encoding ───────────────────────────────────────────────────
@@ -100,20 +91,17 @@ def split_data(df: pd.DataFrame):
     )
 
 
-def fit_encoders(df_train: pd.DataFrame) -> dict:
-    """Fit encoder untuk setiap fitur input dan target."""
+def fit_encoders(df_train):
     encoders = {}
-    for col in CLUSTER_FEATURES:
+    # rule_id hanya untuk pencatatan "rule dikenal", BUKAN fitur model
+    for col in CLASSIFICATION_FEATURES + ["rule_id"]:
         encoders[col] = CustomLabelEncoder().fit(df_train[col])
     encoders[TARGET_LABEL_COL] = CustomLabelEncoder().fit(df_train[TARGET_LABEL_COL])
     return encoders
 
 
-def encode_features(df: pd.DataFrame, encoders: dict) -> np.ndarray:
-    """Encode fitur input; nilai baru menjadi -1."""
-    return np.column_stack([
-        encoders[col].transform(df[col]) for col in CLUSTER_FEATURES
-    ])
+def encode_features(df, encoders):
+    return np.column_stack([encoders[c].transform(df[c]) for c in CLASSIFICATION_FEATURES])
 
 
 def encode_target(df: pd.DataFrame, encoders: dict) -> np.ndarray:
@@ -126,6 +114,7 @@ def train_random_forest(X_train: np.ndarray, y_train: np.ndarray) -> RandomFores
         n_estimators=RF_N_ESTIMATORS,
         max_depth=RF_MAX_DEPTH,
         criterion=RF_CRITERION,
+        class_weight="balanced",
         random_state=RF_RANDOM_STATE,
         n_jobs=-1,
     )
@@ -134,7 +123,8 @@ def train_random_forest(X_train: np.ndarray, y_train: np.ndarray) -> RandomFores
 
 
 # ── Evaluasi ───────────────────────────────────────────────────────────
-def evaluate_model(model, X_test, y_test, encoders: dict) -> dict:
+def evaluate_model(model, X_test, y_test, encoders: dict,
+                   fig_name: str = "confusion_matrix_rf.png") -> dict:
     """Cetak laporan klasifikasi, confusion matrix, dan FPR per kelas."""
     target_enc = encoders[TARGET_LABEL_COL]
     class_names = target_enc.classes_
@@ -163,11 +153,12 @@ def evaluate_model(model, X_test, y_test, encoders: dict) -> dict:
         fpr[name] = fp / (fp + tn) if (fp + tn) > 0 else 0.0
         print(f"  {name}: {fpr[name]:.4f}")
 
-    plot_confusion_matrix(cm, class_names)
+    plot_confusion_matrix(cm, class_names, fig_name)
     return {"accuracy": acc, "confusion_matrix": cm, "fpr": fpr}
 
 
-def plot_confusion_matrix(cm: np.ndarray, class_names: list) -> None:
+def plot_confusion_matrix(cm: np.ndarray, class_names: list,
+                          fig_name: str = "confusion_matrix_rf.png") -> None:
     fig, ax = plt.subplots(figsize=(7, 6))
     im = ax.imshow(cm, cmap="Blues")
     ax.set_xticks(range(len(class_names)))
@@ -183,7 +174,7 @@ def plot_confusion_matrix(cm: np.ndarray, class_names: list) -> None:
                     color="white" if cm[i, j] > cm.max() / 2 else "black")
     fig.colorbar(im)
     plt.tight_layout()
-    plt.savefig(FIGURES_DIR / "confusion_matrix_rf.png", dpi=150)
+    plt.savefig(FIGURES_DIR / fig_name, dpi=150)
     plt.show()
 
 
@@ -198,9 +189,15 @@ def load_artifacts():
 
 
 # ── Inferensi (dipakai FastAPI) ────────────────────────────────────────
-def predict_records(records: list, model, encoders: dict) -> list:
-    """Prediksi label untuk list dict berisi fitur CLUSTER_FEATURES."""
-    df = pd.DataFrame(records)[CLUSTER_FEATURES].astype(str)
+def predict_records(records, model, encoders, rule_labels=None):
+    df = pd.DataFrame(records).astype(str)
     X = encode_features(df, encoders)
-    y_pred = model.predict(X)
-    return encoders[TARGET_LABEL_COL].inverse_transform(y_pred)
+    ml = encoders[TARGET_LABEL_COL].inverse_transform(model.predict(X))
+    unk = (X == -1).any(axis=1)
+    out = []
+    for rid, pred, u in zip(df["rule_id"], ml, unk):
+        if rule_labels and rid in rule_labels:
+            out.append({"label": rule_labels[rid], "sumber": "katalog", "perlu_review": False})
+        else:
+            out.append({"label": pred, "sumber": "model", "perlu_review": True})
+    return out

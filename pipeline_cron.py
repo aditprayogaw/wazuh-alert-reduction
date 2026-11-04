@@ -47,7 +47,7 @@ from config import (
     PARQUET_CLUSTERED,
     CSV_DEDUPED,
     CSV_PROFILES,
-    CSV_CLUSTER_MAPPING,
+    CSV_RULE_LABELS,
     CSV_K_SELECTION,
     CONFIG_RUN_JSON,
     MODEL_KMODES_FILE,
@@ -75,6 +75,8 @@ from src.clustering import (
     plot_elbow,
     plot_silhouette,
 )
+
+from src.labeling import export_rule_labels
 
 # ── Logging setup ──────────────────────────────────────────────────────
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -235,26 +237,6 @@ def generate_cluster_profiles(df_clustered: pd.DataFrame) -> pd.DataFrame:
         })
     return pd.DataFrame(profiles)
 
-
-def export_mapping_template(df_clustered: pd.DataFrame):
-    """Menyiapkan template cluster_mapping.csv untuk pelabelan manual (Human-in-the-Loop)."""
-    mapping_data = []
-
-    for cid in sorted(df_clustered["cluster"].unique()):
-        subset = df_clustered[df_clustered["cluster"] == cid]
-        sample_desc = subset["rule_description"].mode()[0] if "rule_description" in subset.columns else "-"
-
-        mapping_data.append({
-            "cluster": cid,
-            "sample_rule_id": subset["rule_id"].mode()[0],
-            "sample_rule_level": subset["rule_level"].mode()[0],
-            "sample_description": sample_desc,
-            "label_semantik": "",  # Diisi manual oleh analis: misal System_Activity, Web_Attack
-        })
-
-    pd.DataFrame(mapping_data).to_csv(CSV_CLUSTER_MAPPING, index=False)
-    log.info(f"Template mapping diekspor: {CSV_CLUSTER_MAPPING}")
-
 def export_cluster_detail(df_clustered: pd.DataFrame, top_n: int = 8):
     """Isi tiap klaster (top rule + persentase) dan posisi rule pantauan, untuk bantu pelabelan."""
     rows = []
@@ -395,7 +377,8 @@ def run_pipeline():
     df_profiles.to_csv(CSV_PROFILES, index=False)
     log.info(f"Profil klaster disimpan di: {CSV_PROFILES}")
 
-    export_mapping_template(deduped)
+    rule_table = export_rule_labels(deduped)
+    log.info(f"Tabel label rule disimpan di: {CSV_RULE_LABELS} ({len(rule_table)} rule)")
     export_cluster_detail(deduped)
 
     # ── Step 6: Catatan Konfigurasi Run (dokumentasi laporan) ───────────
@@ -414,6 +397,8 @@ def run_pipeline():
         "sampel_pencarian_k": len(sample),
         "k_disarankan": k_suggested,
         "k_dipilih": k_chosen,
+        "jumlah_rule": len(rule_table),
+        "distribusi_label_saran": rule_table.groupby("label_saran")["alert"].sum().to_dict(),
         "kmodes": {
             "init": KMODES_INIT,
             "n_init": KMODES_N_INIT,
@@ -431,9 +416,9 @@ def run_pipeline():
     print("\n" + "#" * 60)
     print("PROSES SELESAI: JEDA UNTUK HUMAN-IN-THE-LOOP")
     print(f"1. Buka '{CSV_PROFILES}' dan '{CSV_CLUSTER_DETAIL}' untuk melihat isi tiap klaster.")
-    print(f"   Cek juga '{CSV_CLUSTER_WATCH}': di klaster mana rule serangan web berada.")
-    print("   (Contoh label: System_Activity, Web_Attack, Authentication, dll.)")
-    print("3. Setelah selesai mengisi mapping, lanjutkan ke Script B (Pelatihan AI).")
+    print(f"2. Buka '{CSV_RULE_LABELS}': kolom label_final sudah terisi dari label_saran.")
+    print("   Ubah label_final bila perlu (koreksi tidak akan tertimpa saat Script A diulang).")
+    print("3. Lanjutkan ke Script B (pelatihan), lalu Script C (evaluasi).")
     print("#" * 60 + "\n")
 
 

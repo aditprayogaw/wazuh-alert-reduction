@@ -58,7 +58,20 @@ KMODES_RANDOM_STATE = 42
 # Rule serangan web yang dipantau: di klaster mana rule ini jatuh?
 WATCH_RULE_IDS      = ["31103", "31104", "31516", "31533", "100103", "100105"]
 
+# ── Pelabelan ──────────────────────────────────────────────────────────
+LABEL_GROUP_RULES = [
+    ("Web_Attack",               {"attack"}),
+    ("Agent_Health",             {"agent_flooding"}),
+    ("File_Integrity",           {"syscheck"}),
+    ("Web_Error",                {"web", "accesslog", "nginx", "apache"}),
+    ("Vulnerability_Compliance", {"vulnerability-detector", "sca"}),
+    ("Authentication",           {"authentication_success", "pam", "sshd", "sudo"}),
+]
+LABEL_RULE_ID_OVERRIDES = {"503": "Agent_Health", "506": "Agent_Health"}
+LABEL_DEFAULT = "System_Activity"
+
 # ── Supervised Classification (Random Forest) ─────────────────────────
+CLASSIFICATION_FEATURES = ["rule_level", "decoder_name", "location", "hour_group"]
 TARGET_LABEL_COL    = "label"
 RF_TEST_SIZE        = 0.20
 RF_RANDOM_STATE     = 42
@@ -80,6 +93,7 @@ CSV_K_SELECTION     = REPORTS_DIR / "k_selection.csv"
 CONFIG_RUN_JSON     = REPORTS_DIR / "run_config.json"
 CSV_CLUSTER_DETAIL  = REPORTS_DIR / "cluster_detail.csv"
 CSV_CLUSTER_WATCH   = REPORTS_DIR / "cluster_watch_rules.csv"
+CSV_RULE_LABELS     = DATA_PROC_DIR / "rule_labels.csv"
 
 # Model Artifacts (.pkl)
 MODEL_KMODES_FILE   = MODELS_DIR / "kmodes_wazuh.pkl"
