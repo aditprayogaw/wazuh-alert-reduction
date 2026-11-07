@@ -1,4 +1,4 @@
-# pipeline_cron.py
+# scripts/prepare_data.py
 """
 Script A: Pipeline Persiapan Data & Clustering (Human-in-the-Loop)
 Mengacu pada arsitektur CRISP-DM Fase 3 (Data Preparation) & Fase 4 (Modeling:
@@ -418,7 +418,7 @@ def run_pipeline():
     print(f"1. Buka '{CSV_PROFILES}' dan '{CSV_CLUSTER_DETAIL}' untuk melihat isi tiap klaster.")
     print(f"2. Buka '{CSV_RULE_LABELS}': kolom label_final sudah terisi dari label_saran.")
     print("   Ubah label_final bila perlu (koreksi tidak akan tertimpa saat Script A diulang).")
-    print("3. Lanjutkan ke Script B (pelatihan), lalu Script C (evaluasi).")
+    print("3. Lanjutkan: python -m scripts.train_model, lalu python -m scripts.evaluate_model.")
     print("#" * 60 + "\n")
 
 

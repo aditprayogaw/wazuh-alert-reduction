@@ -1,8 +1,5 @@
 # Data files
-data/raw/
-data/processed/*.parquet
-data/processed/*.csv
-!data/processed/cluster_mapping.csv
+data/
 
 # Model artifacts (pkl files)
 models/*.pkl

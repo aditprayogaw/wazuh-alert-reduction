@@ -1,22 +1,29 @@
-# pipeline_b_train_model.py
+# scripts/train_model.py
 """
-Script B: Pelatihan Model Klasifikasi (Random Forest)
+Pelatihan Model Klasifikasi (Random Forest)
 Mengacu pada arsitektur CRISP-DM Fase 4 (Modeling: Classification) untuk Log Wazuh SOC INSTIKI.
 
+Jalankan dari folder utama proyek:   python -m scripts.train_model
+Prasyarat: scripts.prepare_data sudah dijalankan (data/processed/clustered.parquet ada).
+
 Alur:
-1. Baca data berklaster (clustered.parquet) hasil Script A.
+1. Baca data berklaster (clustered.parquet).
 2. Beri label tiap baris berdasarkan rule_id (data/processed/rule_labels.csv, kolom label_final).
 3. Stratified split 80/20, Custom Label Encoder (nilai asing -> -1).
 4. Latih Random Forest (class_weight balanced untuk kelas timpang).
-5. Evaluasi: accuracy, classification report, confusion matrix, FPR per kelas.
+5. Evaluasi: accuracy, macro-F1, balanced accuracy, MCC, classification report,
+   confusion matrix, FPR per kelas.
 6. Simpan model dan encoder ke models/.
 
 Keluaran utama:
 - models/random_forest_wazuh.pkl, models/custom_label_encoders.pkl
 - reports/eval_latih.json, reports/figures/confusion_matrix_rf.png
 
-Catatan: split acak pada periode yang sama membuat rule_id uji hampir pasti sudah dikenal,
-sehingga akurasinya cenderung tinggi. Evaluasi generalisasi ada di Script C.
+Catatan:
+- Split acak pada periode yang sama membuat rule_id uji hampir pasti sudah dikenal,
+  sehingga akurasinya cenderung tinggi. Evaluasi generalisasi ada di scripts.evaluate_model.
+- Versi ini masih memakai label kategori rule. Akan diganti versi label triase
+  (Dismiss / Review / Escalate) setelah pelabelan manual selesai.
 """
 import json
 
@@ -59,13 +66,16 @@ def run_pipeline():
         "distribusi_label_pola": df[TARGET_LABEL_COL].value_counts().to_dict(),
         "distribusi_label_alert": df.groupby(TARGET_LABEL_COL)["alert_count"].sum().to_dict(),
         "accuracy": res["accuracy"],
+        "macro_f1": res["macro_f1"],
+        "balanced_accuracy": res["balanced_accuracy"],
+        "mcc": res["mcc"],
         "fpr": res["fpr"],
         "catatan": "Split acak 80/20 pada periode yang sama: rule_id uji hampir pasti sudah dikenal. "
-                   "Evaluasi generalisasi ada di Script C.",
+                   "Evaluasi generalisasi ada di scripts.evaluate_model.",
     }
     with open(REPORTS_DIR / "eval_latih.json", "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False, default=str)
-    print("\nScript B selesai. Model dan encoder tersimpan di folder models/.")
+    print("\nPelatihan selesai. Model dan encoder tersimpan di folder models/.")
 
 
 if __name__ == "__main__":
