@@ -1,10 +1,19 @@
 # src/classification.py
 """
-Modul klasifikasi: pelabelan per rule_id, Custom Label Encoder (UNKNOWN-safe),
-Random Forest, evaluasi, serialisasi model, dan inferensi.
+Modul klasifikasi: Custom Label Encoder (UNKNOWN-safe), Random Forest, evaluasi,
+serialisasi model, dan inferensi.
+
+Perubahan dari versi sebelumnya:
+- Fitur klasifikasi memakai CLASSIFICATION_FEATURES (tanpa rule_id, supaya model tidak
+  sekadar menghafal tabel rule -> label).
+- rule_level diperlakukan sebagai ANGKA ASLI (bukan teks yang diurutkan alfabetis).
+- rule_id tetap dienkode, tetapi hanya untuk pencatatan "rule dikenal / rule baru".
+- Inferensi: rule yang ada di katalog dilabeli lewat lookup; rule baru hanya diberi
+  usulan model dan SELALU diserahkan ke analis (tidak pernah diredam otomatis).
+- Evaluasi: tambahan macro-F1, balanced accuracy, MCC, dan kurva abstain.
 
 Dipakai oleh: pipeline_b_train_model.py (Script B), pipeline_c_evaluate.py (Script C),
-dan api/main.py (inferensi).
+dan api/main.py (direncanakan, belum ada).
 """
 import joblib
 import numpy as np
@@ -13,13 +22,18 @@ import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
     classification_report,
     confusion_matrix,
+    f1_score,
+    matthews_corrcoef,
 )
 from sklearn.model_selection import train_test_split
 
 from config import (
     CLASSIFICATION_FEATURES,
+    NUMERIC_FEATURES,
+    NEVER_SUPPRESS_LABELS,
     TARGET_LABEL_COL,
     RF_TEST_SIZE,
     RF_RANDOM_STATE,
@@ -37,6 +51,7 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 UNKNOWN_VALUE = -1
+CATEGORICAL_FEATURES = [c for c in CLASSIFICATION_FEATURES if c not in NUMERIC_FEATURES]
 
 
 # ── Custom Label Encoder (UNKNOWN-safe) ────────────────────────────────
@@ -91,21 +106,38 @@ def split_data(df: pd.DataFrame):
     )
 
 
-def fit_encoders(df_train):
+def fit_encoders(df_train: pd.DataFrame) -> dict:
+    """Fit encoder untuk fitur kategorikal, rule_id (hanya pencatatan), dan target."""
     encoders = {}
-    # rule_id hanya untuk pencatatan "rule dikenal", BUKAN fitur model
-    for col in CLASSIFICATION_FEATURES + ["rule_id"]:
+    for col in CATEGORICAL_FEATURES + ["rule_id"]:
         encoders[col] = CustomLabelEncoder().fit(df_train[col])
     encoders[TARGET_LABEL_COL] = CustomLabelEncoder().fit(df_train[TARGET_LABEL_COL])
     return encoders
 
 
-def encode_features(df, encoders):
-    return np.column_stack([encoders[c].transform(df[c]) for c in CLASSIFICATION_FEATURES])
+def _to_number(series: pd.Series) -> np.ndarray:
+    """Fitur numerik dipakai apa adanya; nilai tidak terbaca menjadi -1."""
+    return pd.to_numeric(series, errors="coerce").fillna(UNKNOWN_VALUE).to_numpy()
+
+
+def encode_features(df: pd.DataFrame, encoders: dict) -> np.ndarray:
+    """Encode fitur input. Kategorikal: nilai baru -> -1. Numerik: angka asli."""
+    cols = []
+    for col in CLASSIFICATION_FEATURES:
+        if col in NUMERIC_FEATURES:
+            cols.append(_to_number(df[col]))
+        else:
+            cols.append(encoders[col].transform(df[col]))
+    return np.column_stack(cols)
 
 
 def encode_target(df: pd.DataFrame, encoders: dict) -> np.ndarray:
     return encoders[TARGET_LABEL_COL].transform(df[TARGET_LABEL_COL])
+
+
+def unknown_flags(df: pd.DataFrame, encoders: dict) -> dict:
+    """Per fitur kategorikal: True bila nilainya belum pernah terlihat saat pelatihan."""
+    return {c: encoders[c].transform(df[c]) == UNKNOWN_VALUE for c in CATEGORICAL_FEATURES}
 
 
 # ── Training ───────────────────────────────────────────────────────────
@@ -125,7 +157,7 @@ def train_random_forest(X_train: np.ndarray, y_train: np.ndarray) -> RandomFores
 # ── Evaluasi ───────────────────────────────────────────────────────────
 def evaluate_model(model, X_test, y_test, encoders: dict,
                    fig_name: str = "confusion_matrix_rf.png") -> dict:
-    """Cetak laporan klasifikasi, confusion matrix, dan FPR per kelas."""
+    """Cetak laporan klasifikasi, confusion matrix, FPR per kelas, dan metrik tambahan."""
     target_enc = encoders[TARGET_LABEL_COL]
     class_names = target_enc.classes_
     labels = list(range(len(class_names)))
@@ -133,7 +165,14 @@ def evaluate_model(model, X_test, y_test, encoders: dict,
     y_pred = model.predict(X_test)
 
     acc = accuracy_score(y_test, y_pred)
-    print(f"\nAccuracy: {acc:.4f}\n")
+    present = np.unique(np.concatenate([y_test, y_pred]))
+    present = present[present >= 0]
+    macro_f1 = f1_score(y_test, y_pred, labels=present, average="macro", zero_division=0)
+    bal_acc = balanced_accuracy_score(y_test, y_pred)
+    mcc = matthews_corrcoef(y_test, y_pred)
+
+    print(f"\nAccuracy: {acc:.4f}")
+    print(f"Macro-F1: {macro_f1:.4f} | Balanced accuracy: {bal_acc:.4f} | MCC: {mcc:.4f}\n")
     print("Classification Report:")
     print(classification_report(
         y_test, y_pred, labels=labels, target_names=class_names, zero_division=0
@@ -154,7 +193,34 @@ def evaluate_model(model, X_test, y_test, encoders: dict,
         print(f"  {name}: {fpr[name]:.4f}")
 
     plot_confusion_matrix(cm, class_names, fig_name)
-    return {"accuracy": acc, "confusion_matrix": cm, "fpr": fpr}
+    return {
+        "accuracy": float(acc),
+        "macro_f1": float(macro_f1),
+        "balanced_accuracy": float(bal_acc),
+        "mcc": float(mcc),
+        "confusion_matrix": cm,
+        "fpr": fpr,
+    }
+
+
+def abstain_curve(model, X, y, thresholds=(0.5, 0.7, 0.8, 0.9, 0.95)) -> pd.DataFrame:
+    """
+    Kompromi 'model memutuskan' vs 'diserahkan ke analis' pada berbagai ambang keyakinan.
+    cakupan_% = porsi pola yang diputuskan model; sisanya diserahkan ke analis.
+    """
+    proba = model.predict_proba(X)
+    conf = proba.max(axis=1)
+    pred = model.classes_[proba.argmax(axis=1)]
+    rows = []
+    for t in thresholds:
+        m = conf >= t
+        rows.append({
+            "ambang": t,
+            "cakupan_%": round(float(m.mean() * 100), 2),
+            "akurasi_pada_yang_diputuskan": round(float((pred[m] == y[m]).mean()), 4) if m.any() else None,
+            "diserahkan_ke_analis_%": round(float((~m).mean() * 100), 2),
+        })
+    return pd.DataFrame(rows)
 
 
 def plot_confusion_matrix(cm: np.ndarray, class_names: list,
@@ -175,7 +241,7 @@ def plot_confusion_matrix(cm: np.ndarray, class_names: list,
     fig.colorbar(im)
     plt.tight_layout()
     plt.savefig(FIGURES_DIR / fig_name, dpi=150)
-    plt.show()
+    plt.close(fig)  # backend Agg: tidak perlu plt.show()
 
 
 # ── Serialisasi ────────────────────────────────────────────────────────
@@ -188,16 +254,42 @@ def load_artifacts():
     return joblib.load(MODEL_RF_FILE), joblib.load(ENCODER_FILE)
 
 
-# ── Inferensi (dipakai FastAPI) ────────────────────────────────────────
-def predict_records(records, model, encoders, rule_labels=None):
+# ── Inferensi (direncanakan dipakai FastAPI) ───────────────────────────
+def predict_records(records: list, model, encoders: dict, rule_labels: dict = None) -> list:
+    """
+    Prediksi untuk list dict berisi 'rule_id' + CLASSIFICATION_FEATURES.
+
+    Kebijakan konservatif:
+    - rule ada di katalog  -> label dari katalog (lookup, bukan tebakan model).
+      Boleh diredam, kecuali labelnya termasuk NEVER_SUPPRESS_LABELS.
+    - rule belum ada di katalog -> hanya usulan model; TIDAK PERNAH diredam otomatis,
+      selalu perlu_review.
+    """
     df = pd.DataFrame(records).astype(str)
     X = encode_features(df, encoders)
-    ml = encoders[TARGET_LABEL_COL].inverse_transform(model.predict(X))
-    unk = (X == -1).any(axis=1)
+    proba = model.predict_proba(X)
+    pred = model.classes_[proba.argmax(axis=1)]
+    conf = proba.max(axis=1)
+    names = encoders[TARGET_LABEL_COL].inverse_transform(pred)
+
+    flags = unknown_flags(df, encoders)
+    unk = np.column_stack(list(flags.values())).any(axis=1) if flags else np.zeros(len(df), dtype=bool)
+    rule_labels = rule_labels or {}
+
     out = []
-    for rid, pred, u in zip(df["rule_id"], ml, unk):
-        if rule_labels and rid in rule_labels:
-            out.append({"label": rule_labels[rid], "sumber": "katalog", "perlu_review": False})
+    for i, rid in enumerate(df["rule_id"]):
+        if rid in rule_labels:
+            label, sumber, keyakinan = rule_labels[rid], "katalog", 1.0
+            boleh = label not in NEVER_SUPPRESS_LABELS
         else:
-            out.append({"label": pred, "sumber": "model", "perlu_review": True})
+            label, sumber, keyakinan = names[i], "model", float(conf[i])
+            boleh = False
+        out.append({
+            "label": label,
+            "sumber": sumber,
+            "keyakinan": round(keyakinan, 3),
+            "nilai_asing": bool(unk[i]),
+            "boleh_diredam": boleh,
+            "perlu_review": not boleh,
+        })
     return out

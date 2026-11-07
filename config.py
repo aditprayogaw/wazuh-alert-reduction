@@ -72,6 +72,8 @@ LABEL_DEFAULT = "System_Activity"
 
 # ── Supervised Classification (Random Forest) ─────────────────────────
 CLASSIFICATION_FEATURES = ["rule_level", "decoder_name", "location", "hour_group"]
+NUMERIC_FEATURES        = ["rule_level"]
+NEVER_SUPPRESS_LABELS   = {"Web_Attack"}
 TARGET_LABEL_COL    = "label"
 RF_TEST_SIZE        = 0.20
 RF_RANDOM_STATE     = 42
