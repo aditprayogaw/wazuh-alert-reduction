@@ -12,6 +12,7 @@ from config import (
     DEDUP_GROUP_COLS,
     TIME_WINDOW_MINUTES,
     HOUR_GROUPS,
+    URL_MAX_CHARS,
 )
 
 LOCAL_TZ = "Asia/Makassar"  # WITA (Bali)
@@ -117,6 +118,14 @@ def flatten_and_clean_logs(records: list) -> pd.DataFrame:
     df_clean["decoder_name"] = df_clean["decoder_name"].astype(str)
     df_clean["location"] = df_clean["location"].astype(str)
 
+    # Konteks web (hanya terisi untuk rule web access log; None untuk rule lain)
+    if "url" in df_clean.columns:
+        df_clean["src_ip"] = df_clean["src_ip"].map(lambda x: x if isinstance(x, str) else None)
+        df_clean["url"] = df_clean["url"].map(
+            lambda x: x[:URL_MAX_CHARS] if isinstance(x, str) else None
+        )
+        df_clean["http_status"] = pd.to_numeric(df_clean["http_status"], errors="coerce")
+
     return df_clean.reset_index(drop=True)
 
 
@@ -130,36 +139,89 @@ def get_hour_group(hour: int) -> str:
     return "malam"
 
 
+def _add_http_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """Penanda baris HTTP dan kelas kode status (2xx/3xx/4xx/5xx) untuk agregasi konteks web."""
+    if "url" not in df.columns or "is_http" in df.columns:
+        return df
+    st = df["http_status"]
+    df["is_http"] = df["url"].notna().astype(int)
+    for col, lo in (("s2xx", 200), ("s3xx", 300), ("s4xx", 400), ("s5xx", 500)):
+        df[col] = ((st >= lo) & (st < lo + 100)).astype(int)
+    return df
+
+
 def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
-    """Rekayasa fitur: ekstraksi tanggal, jam, dan grup jam."""
+    """Rekayasa fitur: ekstraksi tanggal, jam, grup jam, dan penanda HTTP."""
     df = df.copy()
     df["date"] = df["timestamp"].dt.date
     df["hour"] = df["timestamp"].dt.hour
     df["hour_group"] = df["hour"].apply(get_hour_group)
-    return df
+    return _add_http_flags(df)
 
 
 # ── Time-Window Deduplication (Data Preparation) ───────────────────────
 
 def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
-    """Agregasi log sejenis per jendela waktu; alert_count = jumlah kemunculan."""
+    """
+    Agregasi log sejenis per jendela waktu; alert_count = jumlah kemunculan.
+
+    Kolom tambahan:
+    - window_start : awal jendela waktu pola (dulu dibuang).
+    - konteks web (bila data memuat url): n_src_ip, n_url, top_ip_share, share_2xx..share_5xx,
+      url_example. Bernilai 0 / None untuk rule non-web. IP mentah tidak disimpan di hasil.
+    """
     df = df.copy()
     df["time_window"] = df["timestamp"].dt.floor(f"{TIME_WINDOW_MINUTES}min")
+    df = _add_http_flags(df)
 
     group_keys = DEDUP_GROUP_COLS + ["time_window"]
 
-    deduped = (
-        df.groupby(group_keys, as_index=False)
-          .agg(
-              alert_count=("rule_id", "size"),
-              rule_description=("rule_description", "first"),
-              rule_groups=("rule_groups", "first"),
-          )
+    agg = dict(
+        alert_count=("rule_id", "size"),
+        rule_description=("rule_description", "first"),
+        rule_groups=("rule_groups", "first"),
     )
+    has_ctx = "url" in df.columns
+    if has_ctx:
+        agg.update(
+            n_src_ip=("src_ip", "nunique"),
+            n_url=("url", "nunique"),
+            url_example=("url", "first"),
+            tmp_n_ip_rows=("src_ip", "count"),
+            tmp_n_http=("is_http", "sum"),
+            tmp_n_2xx=("s2xx", "sum"),
+            tmp_n_3xx=("s3xx", "sum"),
+            tmp_n_4xx=("s4xx", "sum"),
+            tmp_n_5xx=("s5xx", "sum"),
+        )
+
+    deduped = df.groupby(group_keys, as_index=False).agg(**agg)
+
+    if has_ctx:
+        # Konsentrasi IP: porsi alert dari IP yang paling sering muncul dalam pola
+        ip_rows = df[df["src_ip"].notna()]
+        if len(ip_rows):
+            top = (ip_rows.groupby(group_keys + ["src_ip"]).size()
+                   .groupby(level=group_keys).max().rename("top_ip_n").reset_index())
+            deduped = deduped.merge(top, on=group_keys, how="left")
+        else:
+            deduped["top_ip_n"] = 0
+        deduped["top_ip_n"] = deduped["top_ip_n"].fillna(0)
+        n_ip = deduped["tmp_n_ip_rows"].where(deduped["tmp_n_ip_rows"] > 0)
+        deduped["top_ip_share"] = (deduped["top_ip_n"] / n_ip).fillna(0).round(4)
+
+        n_http = deduped["tmp_n_http"].where(deduped["tmp_n_http"] > 0)
+        for tmp, name in (("tmp_n_2xx", "share_2xx"), ("tmp_n_3xx", "share_3xx"),
+                          ("tmp_n_4xx", "share_4xx"), ("tmp_n_5xx", "share_5xx")):
+            deduped[name] = (deduped[tmp] / n_http).fillna(0).round(4)
+
+        drop = [c for c in deduped.columns if c.startswith("tmp_")] + ["top_ip_n"]
+        deduped = deduped.drop(columns=drop)
 
     deduped["hour_group"] = deduped["time_window"].dt.hour.apply(get_hour_group)
-    return deduped.drop(columns=["time_window"])
-    
+    return deduped.rename(columns={"time_window": "window_start"})
+
+
 # ── Filter Periode ─────────────────────────────────────────────────────
 
 def period_bounds(text: str):
