@@ -33,6 +33,9 @@ EXTRACT_FIELDS = {
     "rule_groups":      ["rule", "groups"],
     "decoder_name":     ["decoder", "name"],
     "location":         ["location"],
+    "src_ip":           ["data", "srcip"],
+    "url":              ["data", "url"],
+    "http_status":      ["data", "id"],
 }
 
 # ── Feature Engineering Temporal (Data Preparation) ───────────────────
@@ -47,6 +50,8 @@ HOUR_GROUPS = {
 # Kolom kunci untuk mengelompokkan log berulang
 DEDUP_GROUP_COLS    = ["agent_name", "rule_id", "decoder_name", "rule_level", "location"]
 TIME_WINDOW_MINUTES = 10
+URL_MAX_CHARS = 200
+WEB_CONTEXT_FEATURES = ["n_src_ip", "n_url", "top_ip_share", "share_2xx", "share_3xx", "share_4xx", "share_5xx"]
 
 # ── K-Modes Clustering (Agnostik Infrastruktur) ────────────────────────
 CLUSTER_FEATURES    = ["rule_id", "rule_level", "decoder_name", "location", "hour_group"]
