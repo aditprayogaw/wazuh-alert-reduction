@@ -3,8 +3,7 @@
 Konfigurasi terpusat proyek Wazuh Alert Reduction (SOC INSTIKI).
 
 Semua path, parameter pipeline, dan nama file artefak didefinisikan di sini.
-Dipakai oleh: pipeline_cron.py (Script A), pipeline_b_train_model.py (Script B),
-pipeline_c_evaluate.py (Script C), src/*, dan notebooks/*.
+Dipakai oleh: scripts/*, src/*, dan notebooks/*.
 """
 from pathlib import Path
 
@@ -19,7 +18,6 @@ FIGURES_DIR     = REPORTS_DIR / "figures"
 API_DIR         = BASE_DIR / "api"
 
 # ── Input Ekstraksi Dinamis ────────────────────────────────────────────
-# Target spesifik file alert Wazuh terkompresi
 JSON_GZ_PATTERN   = "ossec-alerts-*.json.gz"
 ARCHIVE_EXTENSION = ".tar.gz"
 
@@ -47,60 +45,51 @@ HOUR_GROUPS = {
 }
 
 # ── Deduplikasi Temporal ──────────────────────────────────────────────
-# Kolom kunci untuk mengelompokkan log berulang
 DEDUP_GROUP_COLS    = ["agent_name", "rule_id", "decoder_name", "rule_level", "location"]
 TIME_WINDOW_MINUTES = 10
-URL_MAX_CHARS = 200
-WEB_CONTEXT_FEATURES = ["n_src_ip", "n_url", "top_ip_share", "share_2xx", "share_3xx", "share_4xx", "share_5xx"]
+URL_MAX_CHARS       = 200
 
-# ── K-Modes Clustering (Agnostik Infrastruktur) ────────────────────────
-CLUSTER_FEATURES    = ["rule_id", "rule_level", "decoder_name", "location", "hour_group"]
+# ── K-Modes Clustering (Eksplorasi Struktur Alert) ─────────────────────
+CLUSTER_FEATURES    = ["rule_level", "decoder_name", "location", "rule_groups"]
 K_RANGE             = range(2, 11)
-K_SEARCH_SAMPLE     = 20000   # jumlah baris sampel untuk pencarian K (Elbow & Silhouette)
+K_SEARCH_SAMPLE     = 20000
 KMODES_INIT         = "Huang"
 KMODES_N_INIT       = 10
 KMODES_RANDOM_STATE = 42
-# Rule serangan web yang dipantau: di klaster mana rule ini jatuh?
-WATCH_RULE_IDS      = ["31103", "31104", "31516", "31533", "100103", "100105"]
 
-# ── Pelabelan ──────────────────────────────────────────────────────────
-LABEL_GROUP_RULES = [
-    ("Web_Attack",               {"attack"}),
-    ("Agent_Health",             {"agent_flooding"}),
-    ("File_Integrity",           {"syscheck"}),
-    ("Web_Error",                {"web", "accesslog", "nginx", "apache"}),
-    ("Vulnerability_Compliance", {"vulnerability-detector", "sca"}),
-    ("Authentication",           {"authentication_success", "pam", "sshd", "sudo"}),
-]
-LABEL_RULE_ID_OVERRIDES = {"503": "Agent_Health", "506": "Agent_Health"}
-LABEL_DEFAULT = "System_Activity"
-
-# ── Supervised Classification (Random Forest) ─────────────────────────
-CLASSIFICATION_FEATURES = ["rule_level", "decoder_name", "location", "hour_group"]
+# ── Supervised Classification (Random Forest & Triase SOC) ────────────
+# Fitur X: murni atribut konteks (rule_id dan agent_name dikeluarkan)
+CLASSIFICATION_FEATURES = ["rule_level", "decoder_name", "location", "rule_groups"]
 NUMERIC_FEATURES        = ["rule_level"]
-NEVER_SUPPRESS_LABELS   = {"Web_Attack"}
-TARGET_LABEL_COL    = "label"
-RF_TEST_SIZE        = 0.20
+CATEGORICAL_FEATURES    = ["decoder_name", "location", "rule_groups"]
+
+TARGET_LABEL_COL    = "label_final"
+VALID_TRIAGE_LABELS = ["Dismiss", "Review", "Escalate"]
+
+# Parameter Model
 RF_RANDOM_STATE     = 42
 RF_N_ESTIMATORS     = 200
 RF_MAX_DEPTH        = 25
 RF_CRITERION        = "gini"
+RF_CLASS_WEIGHT     = "balanced"
+
+# Ambang batas keyakinan (confidence) untuk usulan Dismiss pada rule baru
+CONFIDENCE_THRESHOLD_DISMISS = 0.85
 
 # ── Output & Artifact Files ────────────────────────────────────────────
-# Data hasil pemrosesan
 PARQUET_CLEANED     = DATA_PROC_DIR / "cleaned.parquet"
 PARQUET_DEDUPED     = DATA_PROC_DIR / "deduped.parquet"
 PARQUET_CLUSTERED   = DATA_PROC_DIR / "clustered.parquet"
 CSV_DEDUPED         = DATA_PROC_DIR / "deduped.csv"
-CSV_CLUSTER_MAPPING = DATA_PROC_DIR / "cluster_mapping.csv"
 
-# Laporan
-CSV_PROFILES        = REPORTS_DIR / "cluster_profiles.csv"
-CSV_K_SELECTION     = REPORTS_DIR / "k_selection.csv"
+# Tabel Kebijakan Rule (Hasil Anotasi Manusia)
+CSV_RULE_LABELS     = DATA_PROC_DIR / "rule_labels_done.csv"
+CSV_RULE_TEMPLATE   = DATA_PROC_DIR / "rule_labels.csv"
+
+# Laporan & Evaluasi
 CONFIG_RUN_JSON     = REPORTS_DIR / "run_config.json"
-CSV_CLUSTER_DETAIL  = REPORTS_DIR / "cluster_detail.csv"
-CSV_CLUSTER_WATCH   = REPORTS_DIR / "cluster_watch_rules.csv"
-CSV_RULE_LABELS     = DATA_PROC_DIR / "rule_labels.csv"
+EVAL_CV_JSON        = REPORTS_DIR / "eval_rule_cross_validation.json"
+CSV_CV_SUMMARY      = REPORTS_DIR / "cv_fold_summary.csv"
 
 # Model Artifacts (.pkl)
 MODEL_KMODES_FILE   = MODELS_DIR / "kmodes_wazuh.pkl"
